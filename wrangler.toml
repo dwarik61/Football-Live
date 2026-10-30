@@ -1,0 +1,7 @@
+name = "football-live-nuvio-addon"
+main = "src/index.js"
+compatibility_date = "2026-10-30"
+
+[vars]
+# Set CHANNELS_JSON as a Cloudflare Worker secret/variable before using the addon.
+# Example value is documented in README.md.
