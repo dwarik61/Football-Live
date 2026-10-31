@@ -1,47 +1,81 @@
 # Football Live for Nuvio
 
-A Stremio-protocol live-TV addon for Nuvio on Android TV and Android mobile.
+A Cloudflare Worker addon using the Stremio addon protocol. It discovers football fixtures from football-data.org, can attach explicitly configured TotalSportek match-page links, and returns only authorised direct media URLs that you provide.
 
-## Current status
+## Important limitations
 
-The source code is committed, but the addon is **not deployed yet**. There is no working public manifest URL yet. It does not scrape TotalSportek or extract third-party player URLs. It only returns direct HTTPS HLS/DASH URLs that you are authorised to use.
+- This project does **not** scrape TotalSportek, extract third-party player URLs, bypass access controls, or manufacture playable links.
+- TotalSportek match links are optional and must be supplied as exact HTTPS URLs in `TOTALSPORTEK_MATCH_URLS_JSON`. They are displayed as metadata website links when the Nuvio client supports them; they are not direct video streams.
+- Direct playback is offered only for HTTPS HLS `.m3u8` URLs you are authorised to use. The addon does not claim to validate that a provider's stream is currently online or that Nuvio supports every codec/DRM configuration.
+- Fixture discovery requires a football-data.org API token. Their free plan has competition and request limits; check their current terms and coverage.
+- With no configured authorised streams, match cards can appear but their Sources list will be empty. This is intentional: no fake streams.
 
-## Deploy using Cloudflare Workers
+## Deploy to the existing Cloudflare Worker
 
-1. Create a free Cloudflare account and open **Workers & Pages**.
-2. Create a Worker named `football-live-nuvio-addon`.
-3. Deploy this repository using Wrangler, or connect this GitHub repository in the Cloudflare dashboard.
-4. Set the Worker variable `CHANNELS_JSON` to a JSON array of authorised streams. Example:
+Connect the existing Worker `football-live` to this GitHub repository (`dwarik61/Football-Live`), production branch `main`. The repository includes `wrangler.toml`; deploy with:
 
-```json
-[
-  {
-    "id": "match-001",
-    "name": "Example FC vs Sample United",
-    "description": "Example live match",
-    "streamUrl": "https://YOUR-AUTHORISED-HOST/example/index.m3u8",
-    "sourceName": "Official stream"
-  }
-]
+```sh
+npm install
+npx wrangler deploy
 ```
 
-Replace the example values with actual fixture details and direct media URLs supplied by a rights-holder or authorised provider. A webpage URL is not a playable stream URL.
+Do not create a second Worker. The Worker name in `wrangler.toml` is already `football-live`.
 
-5. After deployment, test `https://YOUR-WORKER.workers.dev/health` and `https://YOUR-WORKER.workers.dev/manifest.json`.
-6. Paste the manifest URL into Nuvio's Addons section.
+## Worker variables
 
-## Routes
+In Cloudflare → Workers & Pages → football-live → Settings → Variables and Secrets, add:
 
-- `/manifest.json`
-- `/catalog/tv/football-live.json`
-- `/meta/tv/{id}.json`
-- `/stream/tv/{id}.json`
+### 1. FOOTBALL_DATA_TOKEN (Secret)
 
-The catalog remains empty until `CHANNELS_JSON` contains authorised stream entries. This avoids fake matches or non-playable links.
+Create an API token from football-data.org and store it as a secret named `FOOTBALL_DATA_TOKEN`. Without it, the addon returns an empty fixture catalogue.
+
+### 2. MATCH_STREAMS_JSON (Variable)
+
+JSON object keyed by football-data.org match ID. Add only direct HTTPS HLS URLs for streams you are authorised to distribute:
+
+```json
+{
+  "123456": [
+    {
+      "name": "Official broadcaster",
+      "title": "Home FC vs Away FC",
+      "url": "https://media.example.org/live/channel/index.m3u8"
+    }
+  ]
+}
+```
+
+The example URL is illustrative only and is not a real stream. Replace it with a verified, authorised provider URL. The worker filters for HTTPS URLs ending in `.m3u8`.
+
+### 3. TOTALSPORTEK_MATCH_URLS_JSON (Variable, optional)
+
+Map a fixture ID to its exact public match page URL, if you have verified that page:
+
+```json
+{
+  "123456": "https://example.org/exact-match-page"
+}
+```
+
+Do not put a homepage or guessed URL here and expect it to resolve to a particular match. This link opens the match page externally; it is not an in-player stream.
+
+## Nuvio installation
+
+After deployment, test:
+
+- `https://football-live.dwarik61.workers.dev/health`
+- `https://football-live.dwarik61.workers.dev/manifest.json`
+- `https://football-live.dwarik61.workers.dev/catalog/tv/football-live.json`
+
+Then add this manifest URL in Nuvio:
+
+`https://football-live.dwarik61.workers.dev/manifest.json`
+
+If Nuvio's addon UI accepts Stremio-compatible manifests, Football Live should appear in its TV/live catalogue. Exact display and external-link handling can vary by Nuvio version.
 
 ## Local development
 
-```bash
+```sh
 npm install
 npx wrangler dev
 ```
