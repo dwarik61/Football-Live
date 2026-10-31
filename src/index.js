@@ -1,92 +1,157 @@
-const cors = {
+const HEADERS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, HEAD, OPTIONS",
   "access-control-allow-headers": "Content-Type",
   "content-type": "application/json; charset=utf-8"
 };
 
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), { status, headers: cors });
+const json = (data, status = 200) =>
+  new Response(JSON.stringify(data), { status, headers: HEADERS });
+
+function parseJson(value, fallback) {
+  try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 }
 
-function getChannels(env) {
+function validHttps(value) {
+  try { return new URL(value).protocol === "https:"; } catch { return false; }
+}
+
+function fixtureId(match) {
+  return `football-live:${match.id}`;
+}
+
+function matchTitle(match) {
+  return `${match.homeTeam?.name || "Home"} vs ${match.awayTeam?.name || "Away"}`;
+}
+
+function matchDescription(match) {
+  const score = match.score?.fullTime;
+  const scoreText = score && score.home !== null && score.away !== null
+    ? ` | Score: ${score.home}-${score.away}` : "";
+  return [
+    match.competition?.name || "Football",
+    match.utcDate ? new Date(match.utcDate).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "",
+    match.status || "SCHEDULED",
+    scoreText
+  ].filter(Boolean).join(" | ");
+}
+
+function parseMap(env, key) {
+  const value = parseJson(env[key], {});
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function directStreams(env, matchId) {
+  const map = parseMap(env, "MATCH_STREAMS_JSON");
+  const entries = Array.isArray(map[String(matchId)]) ? map[String(matchId)] : [];
+  return entries.filter((s) => s && typeof s.name === "string" &&
+    typeof s.url === "string" && validHttps(s.url) &&
+    /\.m3u8(?:$|\?)/i.test(s.url) || false);
+}
+
+function totalSportekLink(env, matchId) {
+  const map = parseMap(env, "TOTALSPORTEK_MATCH_URLS_JSON");
+  const link = map[String(matchId)];
+  return typeof link === "string" && validHttps(link) ? link : null;
+}
+
+async function getMatches(env) {
+  if (!env.FOOTBALL_DATA_TOKEN) {
+    return { matches: [], unavailable: "Add FOOTBALL_DATA_TOKEN to enable live fixtures." };
+  }
+  const now = new Date();
+  const from = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const to = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const endpoint = new URL("https://api.football-data.org/v4/matches");
+  endpoint.searchParams.set("dateFrom", from);
+  endpoint.searchParams.set("dateTo", to);
   try {
-    const parsed = JSON.parse(env.CHANNELS_JSON || "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item) =>
-      item && typeof item.id === "string" &&
-      typeof item.name === "string" &&
-      typeof item.streamUrl === "string" &&
-      /^https:\/\//i.test(item.streamUrl)
-    );
+    const response = await fetch(endpoint, {
+      headers: { "X-Auth-Token": env.FOOTBALL_DATA_TOKEN }
+    });
+    if (!response.ok) {
+      return { matches: [], unavailable: `Fixture provider returned HTTP ${response.status}.` };
+    }
+    const body = await response.json();
+    return { matches: Array.isArray(body.matches) ? body.matches : [] };
   } catch {
-    return [];
+    return { matches: [], unavailable: "Fixture provider could not be reached." };
   }
 }
 
-function metaFor(channel) {
+function metaFor(match, env) {
+  const external = totalSportekLink(env, match.id);
+  const links = external ? [{
+    name: "TotalSportek match page",
+    category: "website",
+    url: external
+  }] : [];
   return {
-    id: channel.id,
+    id: fixtureId(match),
     type: "tv",
-    name: channel.name,
-    poster: channel.logo || undefined,
-    background: channel.background || undefined,
-    description: channel.description || "Live football stream"
+    name: matchTitle(match),
+    description: matchDescription(match),
+    poster: match.competition?.emblem || undefined,
+    background: match.homeTeam?.crest || undefined,
+    releaseInfo: match.competition?.name || "Football",
+    links
   };
 }
 
 export default {
   async fetch(request, env) {
-    if (request.method === "OPTIONS") {
-      return new Response(null, { headers: cors });
-    }
-    const url = new URL(request.url);
-    const path = decodeURIComponent(url.pathname);
-    const channels = getChannels(env);
+    if (request.method === "OPTIONS") return new Response(null, { headers: HEADERS });
+    const path = new URL(request.url).pathname;
 
     if (path === "/" || path === "/health") {
-      return json({ name: "Football Live", status: "ok", configuredSources: channels.length });
+      const hasToken = Boolean(env.FOOTBALL_DATA_TOKEN);
+      return json({
+        name: "Football Live",
+        status: "ok",
+        fixtureProviderConfigured: hasToken,
+        note: hasToken ? "Fixture provider configured." : "Fixtures are disabled until FOOTBALL_DATA_TOKEN is set."
+      });
     }
 
     if (path === "/manifest.json") {
       return json({
         id: "community.dwarik61.football-live",
-        version: "0.1.0",
+        version: "1.0.0",
         name: "Football Live",
-        description: "Live football streams from sources you are authorised to use.",
-        logo: "https://raw.githubusercontent.com/dwarik61/Football-Live/main/assets/logo.png",
+        description: "Football fixtures with authorised direct streams and optional match-page links.",
         resources: ["catalog", "meta", "stream"],
         types: ["tv"],
-        catalogs: [{ type: "tv", id: "football-live", name: "Football Live" }],
+        catalogs: [{ type: "tv", id: "football-live", name: "Football Live", extra: [{ name: "search", isRequired: false }] }],
         idPrefixes: ["football-live:"]
       });
     }
 
-    const catalogMatch = path.match(/^\/catalog\/tv\/football-live(?:\/.*)?\.json$/);
-    if (catalogMatch) {
-      return json({ metas: channels.map(metaFor) });
+    if (/^\/catalog\/tv\/football-live(?:\/.*)?\.json$/.test(path)) {
+      const { matches } = await getMatches(env);
+      const metas = matches
+        .filter((m) => m && m.id && m.homeTeam && m.awayTeam)
+        .sort((a, b) => new Date(a.utcDate) - new Date(b.utcDate))
+        .map((m) => metaFor(m, env));
+      return json({ metas });
     }
 
-    const metaMatch = path.match(/^\/meta\/tv\/(.+)\.json$/);
+    const metaMatch = path.match(/^\/meta\/tv\/(?:football-live:)?(\d+)\.json$/);
     if (metaMatch) {
-      const id = metaMatch[1];
-      const channel = channels.find((item) => item.id === id || `football-live:${item.id}` === id);
-      return channel ? json({ meta: metaFor(channel) }) : json({ meta: null }, 404);
+      const { matches } = await getMatches(env);
+      const match = matches.find((m) => String(m.id) === metaMatch[1]);
+      return match ? json({ meta: metaFor(match, env) }) : json({ meta: null }, 404);
     }
 
-    const streamMatch = path.match(/^\/stream\/tv\/(.+)\.json$/);
+    const streamMatch = path.match(/^\/stream\/tv\/(?:football-live:)?(\d+)\.json$/);
     if (streamMatch) {
       const id = streamMatch[1];
-      const channel = channels.find((item) => item.id === id || `football-live:${item.id}` === id);
-      if (!channel) return json({ streams: [] });
-      return json({
-        streams: [{
-          name: channel.sourceName || "Football Live",
-          title: channel.streamTitle || channel.name,
-          url: channel.streamUrl,
-          behaviorHints: channel.notWebReady ? { notWebReady: true } : undefined
-        }]
-      });
+      const streams = directStreams(env, id).map((s) => ({
+        name: s.name,
+        title: s.title || s.name,
+        url: s.url,
+        ...(s.behaviorHints ? { behaviorHints: s.behaviorHints } : {})
+      }));
+      return json({ streams });
     }
 
     return json({ error: "Not found" }, 404);
