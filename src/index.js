@@ -44,9 +44,10 @@ function parseMap(env, key) {
 function directStreams(env, matchId) {
   const map = parseMap(env, "MATCH_STREAMS_JSON");
   const entries = Array.isArray(map[String(matchId)]) ? map[String(matchId)] : [];
-  return entries.filter((s) => s && typeof s.name === "string" &&
-    typeof s.url === "string" && validHttps(s.url) &&
-    /\.m3u8(?:$|\?)/i.test(s.url) || false);
+  return entries.filter((s) => {
+    if (!s || typeof s.name !== "string" || typeof s.url !== "string" || !validHttps(s.url)) return false;
+    return /\.(?:m3u8|mpd)(?:$|\?)/i.test(s.url);
+  });
 }
 
 function totalSportekLink(env, matchId) {
