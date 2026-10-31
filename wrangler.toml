@@ -1,4 +1,4 @@
-name = "football-live-nuvio-addon"
+name = "football-live"
 main = "src/index.js"
 compatibility_date = "2026-10-30"
 
